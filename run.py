@@ -21,6 +21,13 @@ parser.add_argument('--config',  '-c',
                     help =  'path to the config file',
                     default='configs/vae.yaml')
 
+# Resume from checkpoint
+parser.add_argument('--resume', '-r',
+                    dest="resume_from",
+                    metavar='FILE',
+                    help =  'path to the checkpoint file to resume from',
+                    default=None)
+
 args = parser.parse_args()
 with open(args.filename, 'r') as file:
     try:
@@ -59,4 +66,4 @@ Path(f"{tb_logger.log_dir}/Reconstructions").mkdir(exist_ok=True, parents=True)
 
 
 print(f"======= Training {config['model_params']['name']} =======")
-runner.fit(experiment, datamodule=data)
+runner.fit(experiment, datamodule=data, ckpt_path=args.resume_from)
