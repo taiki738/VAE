@@ -6,6 +6,7 @@ from pathlib import Path
 from models import *
 from experiment import VAEXperiment
 import torch.backends.cudnn as cudnn
+cudnn.enabled = False
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.utilities.seed import seed_everything

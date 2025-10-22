@@ -59,7 +59,8 @@ class VAEXperiment(pl.LightningModule):
 
         
     def on_validation_end(self) -> None:
-        self.sample_images()
+        if hasattr(self.logger, 'log_dir'):
+            self.sample_images()
         
     def sample_images(self):
         # Get sample reconstruction image            

@@ -1,7 +1,6 @@
    
 logs/
 
-Data/
 
 VanillaVAE/version_0/
 
@@ -11,3 +10,5 @@ __pycache__/
 Run.ipynb
 
 .venv/
+Data/
+configs/tmp/tmp_vae.yaml
