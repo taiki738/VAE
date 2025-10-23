@@ -1,0 +1,10 @@
+.git
+.idea
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+_project_checkpoints
+logs/
+Data/
