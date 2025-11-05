@@ -18,6 +18,7 @@ class BetaVAE(BaseVAE):
                  max_capacity: int = 25,
                  Capacity_max_iter: int = 1e5,
                  loss_type:str = 'B',
+                 img_size:int = 64,
                  **kwargs) -> None:
         super(BetaVAE, self).__init__()
 
@@ -44,14 +45,15 @@ class BetaVAE(BaseVAE):
             in_channels = h_dim
 
         self.encoder = nn.Sequential(*modules)
-        self.fc_mu = nn.Linear(hidden_dims[-1]*16, latent_dim)
-        self.fc_var = nn.Linear(hidden_dims[-1]*16, latent_dim)
+        self.final_img_size = img_size // (2 ** len(hidden_dims))
+        self.fc_mu = nn.Linear(hidden_dims[-1] * self.final_img_size ** 2, latent_dim)
+        self.fc_var = nn.Linear(hidden_dims[-1] * self.final_img_size ** 2, latent_dim)
 
 
         # Build Decoder
         modules = []
 
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 16)
+        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * self.final_img_size ** 2)
 
         hidden_dims.reverse()
 
@@ -104,7 +106,7 @@ class BetaVAE(BaseVAE):
 
     def decode(self, z: Tensor) -> Tensor:
         result = self.decoder_input(z)
-        result = result.view(-1, 512, 4, 4)
+        result = result.view(-1, self.encoder[-1][0].out_channels, self.final_img_size, self.final_img_size)
         result = self.decoder(result)
         result = self.final_layer(result)
         return result

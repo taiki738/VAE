@@ -116,7 +116,7 @@ def analyze(args):
     plt.ylabel("t-SNE dimension 2")
     
     # Save plot
-    output_filename = f"analysis_results/tsne_{model_name}_{args.exp_name}.png"
+    output_filename = f"results_analysis/tsne_{model_name}_{args.exp_name}.png"
     plt.savefig(output_filename)
     print(f"Plot saved to {output_filename}")
     plt.close()

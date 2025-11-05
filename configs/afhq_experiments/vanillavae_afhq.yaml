@@ -1,17 +1,16 @@
 model_params:
-  name: "BetaVAE"
+  name: "VanillaVAE"
   in_channels: 3
   latent_dim: 128
-  loss_type: "H"
-  beta: 1
   img_size: 128
+  kld_anneal_end_step: 5000
 
 data_params:
   data_path: "Data/"
   train_batch_size: 64
   val_batch_size: 64
-  img_size: 128
   num_workers: 4
+  img_size: 128
 
 exp_params:
   LR: 0.0005
@@ -22,8 +21,8 @@ exp_params:
 
 trainer_params:
   gpus: [0]
-  max_epochs: 30
+  max_epochs: 50
 
 logging_params:
   save_dir: "logs/"
-  name: "BetaVAE_H"
+  name: "VanillaVAE"

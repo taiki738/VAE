@@ -1,4 +1,4 @@
-logs/
+
 
 
 VanillaVAE/version_0/
@@ -11,4 +11,4 @@ Run.ipynb
 .venv/
 Data/
 configs/tmp/tmp_vae.yaml
-sampling_results/
+results_sampling/

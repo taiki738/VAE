@@ -33,8 +33,8 @@ def main():
                         help='Class ID for conditional generation (e.g., 0 for cat, 1 for dog)')
     parser.add_argument('--output_dir',
                         type=str,
-                        default='./sampling_results',
-                        help='Directory to save the generated images (default: ./sampling_results)')
+                        default='./results_sampling',
+                        help='Directory to save the generated images (default: ./results_sampling)')
     parser.add_argument('--gpu_id',
                         type=int,
                         default=None,
@@ -100,7 +100,8 @@ def main():
     # --- Save Samples ---
     # Create a filename that includes model name, class, and number of samples
     model_name = config['model_params']['name']
-    filename = f"samples_{model_name}_class_{args.class_id}_n_{args.num_samples}.png"
+    version = Path(args.checkpoint).parent.parent.name # Extract version from path
+    filename = f"samples_{model_name}_{version}_class_{args.class_id}_n_{args.num_samples}.png"
     output_filepath = output_path / filename
     
     vutils.save_image(samples.cpu().data,

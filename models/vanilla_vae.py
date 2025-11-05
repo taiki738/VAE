@@ -12,10 +12,13 @@ class VanillaVAE(BaseVAE):
                  in_channels: int,
                  latent_dim: int,
                  hidden_dims: List = None,
+                 img_size: int = 64,
+                 kld_anneal_end_step: int = 0,
                  **kwargs) -> None:
         super(VanillaVAE, self).__init__()
 
         self.latent_dim = latent_dim
+        self.kld_anneal_end_step = kld_anneal_end_step
 
         modules = []
         if hidden_dims is None:
@@ -33,14 +36,16 @@ class VanillaVAE(BaseVAE):
             in_channels = h_dim
 
         self.encoder = nn.Sequential(*modules)
-        self.fc_mu = nn.Linear(hidden_dims[-1]*4, latent_dim)
-        self.fc_var = nn.Linear(hidden_dims[-1]*4, latent_dim)
+        self.final_img_size = img_size // (2 ** len(hidden_dims))
+        fc_input_size = hidden_dims[-1] * (self.final_img_size ** 2)
+        self.fc_mu = nn.Linear(fc_input_size, latent_dim)
+        self.fc_var = nn.Linear(fc_input_size, latent_dim)
 
 
         # Build Decoder
         modules = []
 
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
+        self.decoder_input = nn.Linear(latent_dim, fc_input_size)
 
         hidden_dims.reverse()
 
@@ -99,7 +104,7 @@ class VanillaVAE(BaseVAE):
         :return: (Tensor) [B x C x H x W]
         """
         result = self.decoder_input(z)
-        result = result.view(-1, 512, 2, 2)
+        result = result.view(-1, 512, self.final_img_size, self.final_img_size)
         result = self.decoder(result)
         result = self.final_layer(result)
         return result
@@ -137,13 +142,22 @@ class VanillaVAE(BaseVAE):
         log_var = args[3]
 
         kld_weight = kwargs['M_N'] # Account for the minibatch samples from the dataset
+
+        # KL Annealing
+        if self.kld_anneal_end_step > 0:
+            global_step = kwargs.get('global_step', 0)
+            kld_weight *= min(1.0, global_step / self.kld_anneal_end_step)
+
         recons_loss =F.mse_loss(recons, input)
 
 
         kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim = 1), dim = 0)
 
         loss = recons_loss + kld_weight * kld_loss
-        return {'loss': loss, 'Reconstruction_Loss':recons_loss.detach(), 'KLD':-kld_loss.detach()}
+        return {'loss': loss, 
+                'Reconstruction_Loss':recons_loss.detach(), 
+                'KLD':-kld_loss.detach(), 
+                'kld_weight': torch.tensor(kld_weight)}
 
     def sample(self,
                num_samples:int,
