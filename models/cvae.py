@@ -45,7 +45,7 @@ class ConditionalVAE(BaseVAE):
         # Build Decoder
         modules = []
 
-        self.decoder_input = nn.Linear(latent_dim + num_classes, hidden_dims[-1] * 4)
+        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
 
         hidden_dims.reverse()
 
@@ -128,7 +128,6 @@ class ConditionalVAE(BaseVAE):
 
         z = self.reparameterize(mu, log_var)
 
-        z = torch.cat([z, y_one_hot.to(z.device)], dim = 1)
         return  [self.decode(z), input, mu, log_var]
 
     def loss_function(self,
@@ -166,7 +165,6 @@ class ConditionalVAE(BaseVAE):
 
         z = z.to(current_device)
 
-        z = torch.cat([z, y_one_hot], dim=1)
         samples = self.decode(z)
         return samples
 
