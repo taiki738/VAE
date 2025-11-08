@@ -1,0 +1,28 @@
+model_params:
+  name: 'ConditionalVAE'
+  in_channels: 3
+  num_classes: 2 # 0: discarded, 1: kept
+  latent_dim: 128
+
+data_params:
+  data_path: "Data/UTK-FACE/filtered_dataset"
+  train_batch_size: 32
+  val_batch_size:  32
+  patch_size: 64
+  num_workers: 4
+
+
+exp_params:
+  LR: 0.005
+  weight_decay: 0.0
+  scheduler_gamma: 0.95
+  kld_weight: 0.00025
+  manual_seed: 1265
+
+trainer_params:
+  gpus: [0] # Or [1] depending on your setup
+  max_epochs: 20
+
+logging_params:
+  save_dir: "logs/"
+  name: "MyTasteCVAE"

@@ -18,15 +18,14 @@ class ConditionalVAE(BaseVAE):
 
         self.latent_dim = latent_dim
         self.img_size = img_size
-
-        self.embed_class = nn.Linear(num_classes, img_size * img_size)
-        self.embed_data = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.num_classes = num_classes
 
         modules = []
         if hidden_dims is None:
             hidden_dims = [32, 64, 128, 256, 512]
 
-        in_channels += 1 # To account for the extra label channel
+        # To account for the extra label channel
+        in_channels += num_classes
         # Build Encoder
         for h_dim in hidden_dims:
             modules.append(
@@ -46,7 +45,7 @@ class ConditionalVAE(BaseVAE):
         # Build Decoder
         modules = []
 
-        self.decoder_input = nn.Linear(latent_dim + num_classes, hidden_dims[-1] * 4)
+        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
 
         hidden_dims.reverse()
 
@@ -117,17 +116,18 @@ class ConditionalVAE(BaseVAE):
         return eps * std + mu
 
     def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
-        y = kwargs['labels'].float()
-        embedded_class = self.embed_class(y)
-        embedded_class = embedded_class.view(-1, self.img_size, self.img_size).unsqueeze(1)
-        embedded_input = self.embed_data(input)
+        y = kwargs['labels']
+        y_one_hot = F.one_hot(y, self.num_classes).float()
 
-        x = torch.cat([embedded_input, embedded_class], dim = 1)
+        # Reshape y_one_hot to be broadcastable
+        y_one_hot_map = y_one_hot.view(-1, self.num_classes, 1, 1)
+        y_one_hot_map = y_one_hot_map.expand(-1, -1, input.shape[2], input.shape[3])
+
+        x = torch.cat([input, y_one_hot_map.to(input.device)], dim=1)
         mu, log_var = self.encode(x)
 
         z = self.reparameterize(mu, log_var)
 
-        z = torch.cat([z, y], dim = 1)
         return  [self.decode(z), input, mu, log_var]
 
     def loss_function(self,
@@ -157,13 +157,14 @@ class ConditionalVAE(BaseVAE):
         :param current_device: (Int) Device to run the model
         :return: (Tensor)
         """
-        y = kwargs['labels'].float()
+        y = kwargs['labels']
+        y_one_hot = F.one_hot(y, self.num_classes).float().to(current_device)
+
         z = torch.randn(num_samples,
                         self.latent_dim)
 
         z = z.to(current_device)
 
-        z = torch.cat([z, y], dim=1)
         samples = self.decode(z)
         return samples
 

@@ -11,17 +11,53 @@ from torchvision.datasets import CelebA
 import zipfile
 
 
-# Add your custom dataset class here
-class MyDataset(Dataset):
-    def __init__(self):
-        pass
-    
-    
+class UTKFaceTasteDataset(Dataset):
+    def __init__(self, root_dir: str, transform: Optional[Callable] = None, split: str = "train"):
+        self.root_dir = Path(root_dir)
+        self.transform = transform
+        self.samples = [] # List of (image_path, taste_label, gender_label)
+
+        gender_mapping = {"female": 0, "male": 1}
+        taste_mapping = {"discarded": 0, "kept": 1}
+
+        for gender_folder in ["female", "male"]: # Assuming these are the gender folders
+            gender_path = self.root_dir / gender_folder
+            if not gender_path.exists():
+                continue
+
+            for taste_folder in ["kept", "discarded"]:
+                taste_path = gender_path / taste_folder
+                if not taste_path.exists():
+                    continue
+
+                for img_name in os.listdir(taste_path):
+                    if img_name.endswith(('.png', '.jpg', '.jpeg')):
+                        img_path = taste_path / img_name
+                        self.samples.append((
+                            str(img_path),
+                            taste_mapping[taste_folder],
+                            gender_mapping[gender_folder]
+                        ))
+        
+        # Simple split for now, can be improved later
+        if split == "train":
+            self.samples = self.samples[:int(len(self.samples) * 0.8)]
+        else: # "val" or "test"
+            self.samples = self.samples[int(len(self.samples) * 0.8):]
+
+
     def __len__(self):
-        pass
-    
+        return len(self.samples)
+
     def __getitem__(self, idx):
-        pass
+        img_path, taste_label, gender_label = self.samples[idx]
+        img = default_loader(img_path)
+
+        if self.transform:
+            img = self.transform(img)
+        
+        # Return image and gender_label for gender-based CVAE training
+        return img, torch.tensor(gender_label, dtype=torch.long)
 
 
 class MyCelebA(CelebA):
@@ -35,7 +71,7 @@ class MyCelebA(CelebA):
     def _check_integrity(self) -> bool:
         return True
     
-    
+
 
 class OxfordPets(Dataset):
     """
@@ -136,19 +172,17 @@ class VAEDataset(LightningDataModule):
                                             transforms.Resize(self.patch_size),
                                             transforms.ToTensor(),])
         
-        self.train_dataset = MyCelebA(
+        self.train_dataset = UTKFaceTasteDataset(
             self.data_dir,
             split='train',
             transform=train_transforms,
-            download=False,
         )
         
         # Replace CelebA with your dataset
-        self.val_dataset = MyCelebA(
+        self.val_dataset = UTKFaceTasteDataset(
             self.data_dir,
             split='test',
             transform=val_transforms,
-            download=False,
         )
 #       ===============================================================
         
