@@ -1,5 +1,5 @@
 import torch
-from models import BaseVAE
+from vae_models import BaseVAE
 from torch import nn
 from torch.distributions import Gamma
 from torch.nn import functional as F

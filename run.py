@@ -3,7 +3,7 @@ import yaml
 import argparse
 import numpy as np
 from pathlib import Path
-from models import *
+from vae_models import *
 from experiment import VAEXperiment
 import torch.backends.cudnn as cudnn
 cudnn.enabled = False
@@ -43,9 +43,12 @@ tb_logger =  TensorBoardLogger(save_dir=config['logging_params']['save_dir'],
 # For reproducibility
 seed_everything(config['exp_params']['manual_seed'], True)
 
+# Merge all params into a single dictionary
+params = {**config['model_params'], **config['exp_params'], **config['data_params']}
+
 model = vae_models[config['model_params']['name']](**config['model_params'])
 experiment = VAEXperiment(model,
-                          config['exp_params'])
+                          params)
 
 data = VAEDataset(**config["data_params"], pin_memory=len(config['trainer_params']['gpus']) != 0)
 

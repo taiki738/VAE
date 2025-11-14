@@ -1,28 +1,32 @@
 import torch
-from models import BaseVAE
+from vae_models.base import BaseVAE
 from torch import nn
 from torch.nn import functional as F
 from .types_ import *
+from modules.distributions import DiagonalGaussianDistribution
 
 
-class DIPVAE(BaseVAE):
+class VanillaVAE2D(BaseVAE):
+
 
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
                  hidden_dims: List = None,
-                 lambda_diag: float = 10.,
-                 lambda_offdiag: float = 5.,
+                 img_size: int = 64,
+                 kld_anneal_end_step: int = 0,
                  **kwargs) -> None:
-        super(DIPVAE, self).__init__()
+        super(VanillaVAE2D, self).__init__()
 
         self.latent_dim = latent_dim
-        self.lambda_diag = lambda_diag
-        self.lambda_offdiag = lambda_offdiag
+        self.kld_anneal_end_step = kld_anneal_end_step
 
         modules = []
         if hidden_dims is None:
             hidden_dims = [32, 64, 128, 256, 512]
+        self.hidden_dims = hidden_dims
+        self.final_img_size = img_size // (2 ** len(self.hidden_dims))
+
 
         # Build Encoder
         for h_dim in hidden_dims:
@@ -36,14 +40,14 @@ class DIPVAE(BaseVAE):
             in_channels = h_dim
 
         self.encoder = nn.Sequential(*modules)
-        self.fc_mu = nn.Linear(hidden_dims[-1]*4, latent_dim)
-        self.fc_var = nn.Linear(hidden_dims[-1]*4, latent_dim)
+        self.fc_mu = nn.Conv2d(hidden_dims[-1], self.latent_dim, kernel_size=3, padding=1)
+        self.fc_var = nn.Conv2d(hidden_dims[-1], self.latent_dim, kernel_size=3, padding=1)
 
 
         # Build Decoder
         modules = []
 
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
+        self.decoder_input = nn.Conv2d(self.latent_dim, hidden_dims[-1], kernel_size=3, padding=1)
 
         hidden_dims.reverse()
 
@@ -60,6 +64,8 @@ class DIPVAE(BaseVAE):
                     nn.LeakyReLU())
             )
 
+
+
         self.decoder = nn.Sequential(*modules)
 
         self.final_layer = nn.Sequential(
@@ -75,52 +81,42 @@ class DIPVAE(BaseVAE):
                                       kernel_size= 3, padding= 1),
                             nn.Tanh())
 
-    def encode(self, input: Tensor) -> List[Tensor]:
+    def encode(self, input: Tensor) -> "DiagonalGaussianDistribution":
         """
         Encodes the input by passing through the encoder network
         and returns the latent codes.
         :param input: (Tensor) Input tensor to encoder [N x C x H x W]
-        :return: (Tensor) List of latent codes
+        :return: (DiagonalGaussianDistribution) The posterior distribution.
         """
         result = self.encoder(input)
-        result = torch.flatten(result, start_dim=1)
 
         # Split the result into mu and var components
         # of the latent Gaussian distribution
         mu = self.fc_mu(result)
         log_var = self.fc_var(result)
+        
+        # Combine mu and log_var to match the parameters format for DiagonalGaussianDistribution
+        parameters = torch.cat([mu, log_var], dim=1)
+        posterior = DiagonalGaussianDistribution(parameters)
 
-        return [mu, log_var]
+        return posterior
 
     def decode(self, z: Tensor) -> Tensor:
         """
         Maps the given latent codes
         onto the image space.
-        :param z: (Tensor) [B x D]
+        :param z: (Tensor) [B x D x H' x W']
         :return: (Tensor) [B x C x H x W]
         """
         result = self.decoder_input(z)
-        result = result.view(-1, 512, 2, 2)
         result = self.decoder(result)
         result = self.final_layer(result)
         return result
 
-    def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
-        """
-        Reparameterization trick to sample from N(mu, var) from
-        N(0,1).
-        :param mu: (Tensor) Mean of the latent Gaussian [B x D]
-        :param logvar: (Tensor) Standard deviation of the latent Gaussian [B x D]
-        :return: (Tensor) [B x D]
-        """
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return eps * std + mu
-
     def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
-        mu, log_var = self.encode(input)
-        z = self.reparameterize(mu, log_var)
-        return  [self.decode(z), input, mu, log_var]
+        posterior = self.encode(input)
+        z = posterior.sample()
+        return  [self.decode(z), input, posterior]
 
     def loss_function(self,
                       *args,
@@ -134,34 +130,24 @@ class DIPVAE(BaseVAE):
         """
         recons = args[0]
         input = args[1]
-        mu = args[2]
-        log_var = args[3]
+        posterior = args[2]
 
         kld_weight = kwargs['M_N'] # Account for the minibatch samples from the dataset
-        recons_loss =F.mse_loss(recons, input, reduction='sum')
 
+        # KL Annealing
+        if self.kld_anneal_end_step > 0:
+            global_step = kwargs.get('global_step', 0)
+            kld_weight *= min(1.0, global_step / self.kld_anneal_end_step)
 
-        kld_loss = torch.sum(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim = 1), dim = 0)
+        recons_loss =F.mse_loss(recons, input)
 
-        # DIP Loss
-        centered_mu = mu - mu.mean(dim=1, keepdim = True) # [B x D]
-        cov_mu = centered_mu.t().matmul(centered_mu).squeeze() # [D X D]
+        kld_loss = torch.mean(posterior.kl())
 
-        # Add Variance for DIP Loss II
-        cov_z = cov_mu + torch.mean(torch.diagonal((2. * log_var).exp(), dim1 = 0), dim = 0) # [D x D]
-        # For DIp Loss I
-        # cov_z = cov_mu
-
-        cov_diag = torch.diag(cov_z) # [D]
-        cov_offdiag = cov_z - torch.diag(cov_diag) # [D x D]
-        dip_loss = self.lambda_offdiag * torch.sum(cov_offdiag ** 2) + \
-                   self.lambda_diag * torch.sum((cov_diag - 1) ** 2)
-
-        loss = recons_loss + kld_weight * kld_loss + dip_loss
-        return {'loss': loss,
-                'Reconstruction_Loss':recons_loss,
-                'KLD':-kld_loss,
-                'DIP_Loss':dip_loss}
+        loss = recons_loss + kld_weight * kld_loss
+        return {'loss': loss, 
+                'Reconstruction_Loss':recons_loss.detach(), 
+                'KLD':-kld_loss.detach(), 
+                'kld_weight': torch.tensor(kld_weight)}
 
     def sample(self,
                num_samples:int,
@@ -174,7 +160,9 @@ class DIPVAE(BaseVAE):
         :return: (Tensor)
         """
         z = torch.randn(num_samples,
-                        self.latent_dim)
+                        self.latent_dim,
+                        self.final_img_size,
+                        self.final_img_size)
 
         z = z.to(current_device)
 

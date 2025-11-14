@@ -7,7 +7,7 @@ import torchvision.utils as vutils
 from pathlib import Path
 
 from experiment import VAEXperiment
-from models import vae_models
+from vae_models import vae_models
 
 def main():
     """

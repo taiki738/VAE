@@ -1,27 +1,31 @@
 import torch
-from models import BaseVAE
+from vae_models import BaseVAE
 from torch import nn
 from torch.nn import functional as F
 from .types_ import *
 
 
-class IWAE(BaseVAE):
+class ConditionalVAE(BaseVAE):
 
     def __init__(self,
                  in_channels: int,
+                 num_classes: int,
                  latent_dim: int,
                  hidden_dims: List = None,
-                 num_samples: int = 5,
+                 img_size:int = 64,
                  **kwargs) -> None:
-        super(IWAE, self).__init__()
+        super(ConditionalVAE, self).__init__()
 
         self.latent_dim = latent_dim
-        self.num_samples = num_samples
+        self.img_size = img_size
+        self.num_classes = num_classes
 
         modules = []
         if hidden_dims is None:
             hidden_dims = [32, 64, 128, 256, 512]
 
+        # To account for the extra label channel
+        in_channels += num_classes
         # Build Encoder
         for h_dim in hidden_dims:
             modules.append(
@@ -93,23 +97,16 @@ class IWAE(BaseVAE):
         return [mu, log_var]
 
     def decode(self, z: Tensor) -> Tensor:
-        """
-        Maps the given latent codes of S samples
-        onto the image space.
-        :param z: (Tensor) [B x S x D]
-        :return: (Tensor) [B x S x C x H x W]
-        """
-        B, _, _ = z.size()
-        z = z.view(-1, self.latent_dim) #[BS x D]
         result = self.decoder_input(z)
         result = result.view(-1, 512, 2, 2)
         result = self.decoder(result)
-        result = self.final_layer(result) #[BS x C x H x W ]
-        result = result.view([B, -1, result.size(1), result.size(2), result.size(3)]) #[B x S x C x H x W]
+        result = self.final_layer(result)
         return result
 
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
         """
+        Will a single z be enough ti compute the expectation
+        for the loss??
         :param mu: (Tensor) Mean of the latent Gaussian
         :param logvar: (Tensor) Standard deviation of the latent Gaussian
         :return:
@@ -119,49 +116,40 @@ class IWAE(BaseVAE):
         return eps * std + mu
 
     def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
-        mu, log_var = self.encode(input)
-        mu = mu.repeat(self.num_samples, 1, 1).permute(1, 0, 2) # [B x S x D]
-        log_var = log_var.repeat(self.num_samples, 1, 1).permute(1, 0, 2) # [B x S x D]
-        z= self.reparameterize(mu, log_var) # [B x S x D]
-        eps = (z - mu) / log_var # Prior samples
-        return  [self.decode(z), input, mu, log_var, z, eps]
+        y = kwargs['labels']
+        y_one_hot = F.one_hot(y, self.num_classes).float()
+
+        # Reshape y_one_hot to be broadcastable
+        y_one_hot_map = y_one_hot.view(-1, self.num_classes, 1, 1)
+        y_one_hot_map = y_one_hot_map.expand(-1, -1, input.shape[2], input.shape[3])
+
+        x = torch.cat([input, y_one_hot_map.to(input.device)], dim=1)
+        mu, log_var = self.encode(x)
+
+        z = self.reparameterize(mu, log_var)
+
+        return  [self.decode(z), input, mu, log_var]
 
     def loss_function(self,
                       *args,
                       **kwargs) -> dict:
-        """
-        KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
-        :param args:
-        :param kwargs:
-        :return:
-        """
         recons = args[0]
         input = args[1]
         mu = args[2]
         log_var = args[3]
-        z = args[4]
-        eps = args[5]
 
-        input = input.repeat(self.num_samples, 1, 1, 1, 1).permute(1, 0, 2, 3, 4) #[B x S x C x H x W]
+        kld_weight = kwargs['M_N']  # Account for the minibatch samples from the dataset
+        recons_loss =F.mse_loss(recons, input)
 
-        kld_weight = kwargs['M_N'] # Account for the minibatch samples from the dataset
+        kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim = 1), dim = 0)
 
-        log_p_x_z = ((recons - input) ** 2).flatten(2).mean(-1) # Reconstruction Loss [B x S]
-        kld_loss = -0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=2) ## [B x S]
-        # Get importance weights
-        log_weight = (log_p_x_z + kld_weight * kld_loss) #.detach().data
-
-        # Rescale the weights (along the sample dim) to lie in [0, 1] and sum to 1
-        weight = F.softmax(log_weight, dim = -1)
-        # kld_loss = torch.mean(kld_loss, dim = 0)
-
-        loss = torch.mean(torch.sum(weight * log_weight, dim=-1), dim = 0)
-
-        return {'loss': loss, 'Reconstruction_Loss':log_p_x_z.mean(), 'KLD':-kld_loss.mean()}
+        loss = recons_loss + kld_weight * kld_loss
+        return {'loss': loss, 'Reconstruction_Loss':recons_loss, 'KLD':-kld_loss}
 
     def sample(self,
                num_samples:int,
-               current_device: int, **kwargs) -> Tensor:
+               current_device: int,
+               **kwargs) -> Tensor:
         """
         Samples from the latent space and return the corresponding
         image space map.
@@ -169,20 +157,22 @@ class IWAE(BaseVAE):
         :param current_device: (Int) Device to run the model
         :return: (Tensor)
         """
-        z = torch.randn(num_samples, 1,
+        y = kwargs['labels']
+        y_one_hot = F.one_hot(y, self.num_classes).float().to(current_device)
+
+        z = torch.randn(num_samples,
                         self.latent_dim)
 
         z = z.to(current_device)
 
-        samples = self.decode(z).squeeze()
+        samples = self.decode(z)
         return samples
 
     def generate(self, x: Tensor, **kwargs) -> Tensor:
         """
-        Given an input image x, returns the reconstructed image.
-        Returns only the first reconstructed sample
+        Given an input image x, returns the reconstructed image
         :param x: (Tensor) [B x C x H x W]
         :return: (Tensor) [B x C x H x W]
         """
 
-        return self.forward(x)[0][:, 0, :]
+        return self.forward(x, **kwargs)[0]

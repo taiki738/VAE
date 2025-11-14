@@ -1,3 +1,4 @@
+import numpy as np
 import os
 import torch
 from torch import Tensor
@@ -17,8 +18,20 @@ class AFHQDataset(ImageFolder):
                  root: str,
                  transform: Optional[Callable] = None,
                  **kwargs):
+        if transform is None:
+            transform = transforms.Compose([
+                transforms.Resize((128, 128)),
+                transforms.Lambda(lambda img: (np.array(img, dtype=np.float32) / 127.5) - 1.0)
+            ])
         super().__init__(root = root,
                          transform = transform)
+
+    def __getitem__(self, index: int) -> dict:
+        # This is the standard way to get items from ImageFolder
+        image, label = super().__getitem__(index)
+        
+        # The model expects a dictionary
+        return {"image": image, "class_label": label}
 
 
 class MyDataset(Dataset):
@@ -112,11 +125,15 @@ class VAEDataset(LightningDataModule):
 
         train_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
                                               transforms.Resize(self.img_size),
-                                              transforms.ToTensor(),])
+                                              transforms.ToTensor(),
+                                              transforms.Normalize((0.5, 0.5, 0.5),
+                                                                   (0.5, 0.5, 0.5))])
 
         val_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
                                             transforms.Resize(self.img_size),
-                                            transforms.ToTensor(),])
+                                            transforms.ToTensor(),
+                                            transforms.Normalize((0.5, 0.5, 0.5),
+                                                                 (0.5, 0.5, 0.5))])
 
         self.train_dataset = AFHQDataset(
             os.path.join(self.data_dir, "afhq", "train"),

@@ -1,0 +1,28 @@
+model_params:
+  name: "VanillaVAE2D"
+  in_channels: 3
+  latent_dim: 3
+  img_size: 128
+  kld_anneal_end_step: 5000
+
+data_params:
+  data_path: "Data/"
+  train_batch_size: 64
+  val_batch_size: 64
+  num_workers: 4
+  img_size: 128
+
+exp_params:
+  LR: 0.0005
+  weight_decay: 0.0
+  scheduler_gamma: 0.95
+  kld_weight: 0.00025
+  manual_seed: 1265
+
+trainer_params:
+  gpus: [0]
+  max_epochs: 3
+
+logging_params:
+  save_dir: "logs/"
+  name: "VanillaVAE2D"

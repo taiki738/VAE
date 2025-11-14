@@ -1,32 +1,22 @@
 import torch
-import numpy as np
-from models import BaseVAE
+from vae_models import BaseVAE
 from torch import nn
 from torch.nn import functional as F
 from .types_ import *
 
 
-class CategoricalVAE(BaseVAE):
+class IWAE(BaseVAE):
 
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
-                 categorical_dim: int = 40, # Num classes
                  hidden_dims: List = None,
-                 temperature: float = 0.5,
-                 anneal_rate: float = 3e-5,
-                 anneal_interval: int = 100, # every 100 batches
-                 alpha: float = 30.,
+                 num_samples: int = 5,
                  **kwargs) -> None:
-        super(CategoricalVAE, self).__init__()
+        super(IWAE, self).__init__()
 
         self.latent_dim = latent_dim
-        self.categorical_dim = categorical_dim
-        self.temp = temperature
-        self.min_temp = temperature
-        self.anneal_rate = anneal_rate
-        self.anneal_interval = anneal_interval
-        self.alpha = alpha
+        self.num_samples = num_samples
 
         modules = []
         if hidden_dims is None:
@@ -44,14 +34,14 @@ class CategoricalVAE(BaseVAE):
             in_channels = h_dim
 
         self.encoder = nn.Sequential(*modules)
-        self.fc_z = nn.Linear(hidden_dims[-1]*4,
-                               self.latent_dim * self.categorical_dim)
+        self.fc_mu = nn.Linear(hidden_dims[-1]*4, latent_dim)
+        self.fc_var = nn.Linear(hidden_dims[-1]*4, latent_dim)
+
 
         # Build Decoder
         modules = []
 
-        self.decoder_input = nn.Linear(self.latent_dim * self.categorical_dim
-                                       , hidden_dims[-1] * 4)
+        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
 
         hidden_dims.reverse()
 
@@ -84,63 +74,62 @@ class CategoricalVAE(BaseVAE):
                             nn.Conv2d(hidden_dims[-1], out_channels= 3,
                                       kernel_size= 3, padding= 1),
                             nn.Tanh())
-        self.sampling_dist = torch.distributions.OneHotCategorical(1. / categorical_dim * torch.ones((self.categorical_dim, 1)))
 
     def encode(self, input: Tensor) -> List[Tensor]:
         """
         Encodes the input by passing through the encoder network
         and returns the latent codes.
-        :param input: (Tensor) Input tensor to encoder [B x C x H x W]
-        :return: (Tensor) Latent code [B x D x Q]
+        :param input: (Tensor) Input tensor to encoder [N x C x H x W]
+        :return: (Tensor) List of latent codes
         """
         result = self.encoder(input)
         result = torch.flatten(result, start_dim=1)
 
         # Split the result into mu and var components
         # of the latent Gaussian distribution
-        z = self.fc_z(result)
-        z = z.view(-1, self.latent_dim, self.categorical_dim)
-        return [z]
+        mu = self.fc_mu(result)
+        log_var = self.fc_var(result)
+
+        return [mu, log_var]
 
     def decode(self, z: Tensor) -> Tensor:
         """
-        Maps the given latent codes
+        Maps the given latent codes of S samples
         onto the image space.
-        :param z: (Tensor) [B x D x Q]
-        :return: (Tensor) [B x C x H x W]
+        :param z: (Tensor) [B x S x D]
+        :return: (Tensor) [B x S x C x H x W]
         """
+        B, _, _ = z.size()
+        z = z.view(-1, self.latent_dim) #[BS x D]
         result = self.decoder_input(z)
         result = result.view(-1, 512, 2, 2)
         result = self.decoder(result)
-        result = self.final_layer(result)
+        result = self.final_layer(result) #[BS x C x H x W ]
+        result = result.view([B, -1, result.size(1), result.size(2), result.size(3)]) #[B x S x C x H x W]
         return result
 
-    def reparameterize(self, z: Tensor, eps:float = 1e-7) -> Tensor:
+    def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
         """
-        Gumbel-softmax trick to sample from Categorical Distribution
-        :param z: (Tensor) Latent Codes [B x D x Q]
-        :return: (Tensor) [B x D]
+        :param mu: (Tensor) Mean of the latent Gaussian
+        :param logvar: (Tensor) Standard deviation of the latent Gaussian
+        :return:
         """
-        # Sample from Gumbel
-        u = torch.rand_like(z)
-        g = - torch.log(- torch.log(u + eps) + eps)
-
-        # Gumbel-Softmax sample
-        s = F.softmax((z + g) / self.temp, dim=-1)
-        s = s.view(-1, self.latent_dim * self.categorical_dim)
-        return s
-
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps * std + mu
 
     def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
-        q = self.encode(input)[0]
-        z = self.reparameterize(q)
-        return  [self.decode(z), input, q]
+        mu, log_var = self.encode(input)
+        mu = mu.repeat(self.num_samples, 1, 1).permute(1, 0, 2) # [B x S x D]
+        log_var = log_var.repeat(self.num_samples, 1, 1).permute(1, 0, 2) # [B x S x D]
+        z= self.reparameterize(mu, log_var) # [B x S x D]
+        eps = (z - mu) / log_var # Prior samples
+        return  [self.decode(z), input, mu, log_var, z, eps]
 
     def loss_function(self,
                       *args,
                       **kwargs) -> dict:
         """
-        Computes the VAE loss function.
         KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
         :param args:
         :param kwargs:
@@ -148,33 +137,27 @@ class CategoricalVAE(BaseVAE):
         """
         recons = args[0]
         input = args[1]
-        q = args[2]
+        mu = args[2]
+        log_var = args[3]
+        z = args[4]
+        eps = args[5]
 
-        q_p = F.softmax(q, dim=-1) # Convert the categorical codes into probabilities
+        input = input.repeat(self.num_samples, 1, 1, 1, 1).permute(1, 0, 2, 3, 4) #[B x S x C x H x W]
 
         kld_weight = kwargs['M_N'] # Account for the minibatch samples from the dataset
-        batch_idx = kwargs['batch_idx']
 
-        # Anneal the temperature at regular intervals
-        if batch_idx % self.anneal_interval == 0 and self.training:
-            self.temp = np.maximum(self.temp * np.exp(- self.anneal_rate * batch_idx),
-                                   self.min_temp)
+        log_p_x_z = ((recons - input) ** 2).flatten(2).mean(-1) # Reconstruction Loss [B x S]
+        kld_loss = -0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=2) ## [B x S]
+        # Get importance weights
+        log_weight = (log_p_x_z + kld_weight * kld_loss) #.detach().data
 
-        recons_loss =F.mse_loss(recons, input, reduction='mean')
+        # Rescale the weights (along the sample dim) to lie in [0, 1] and sum to 1
+        weight = F.softmax(log_weight, dim = -1)
+        # kld_loss = torch.mean(kld_loss, dim = 0)
 
-        # KL divergence between gumbel-softmax distribution
-        eps = 1e-7
+        loss = torch.mean(torch.sum(weight * log_weight, dim=-1), dim = 0)
 
-        # Entropy of the logits
-        h1 = q_p * torch.log(q_p + eps)
-
-        # Cross entropy with the categorical distribution
-        h2 = q_p * np.log(1. / self.categorical_dim + eps)
-        kld_loss = torch.mean(torch.sum(h1 - h2, dim =(1,2)), dim=0)
-
-        # kld_weight = 1.2
-        loss = self.alpha * recons_loss + kld_weight * kld_loss
-        return {'loss': loss, 'Reconstruction_Loss':recons_loss, 'KLD':-kld_loss}
+        return {'loss': loss, 'Reconstruction_Loss':log_p_x_z.mean(), 'KLD':-kld_loss.mean()}
 
     def sample(self,
                num_samples:int,
@@ -186,24 +169,20 @@ class CategoricalVAE(BaseVAE):
         :param current_device: (Int) Device to run the model
         :return: (Tensor)
         """
-        # [S x D x Q]
+        z = torch.randn(num_samples, 1,
+                        self.latent_dim)
 
-        M = num_samples * self.latent_dim
-        np_y = np.zeros((M, self.categorical_dim), dtype=np.float32)
-        np_y[range(M), np.random.choice(self.categorical_dim, M)] = 1
-        np_y = np.reshape(np_y, [M // self.latent_dim, self.latent_dim, self.categorical_dim])
-        z = torch.from_numpy(np_y)
+        z = z.to(current_device)
 
-        # z = self.sampling_dist.sample((num_samples * self.latent_dim, ))
-        z = z.view(num_samples, self.latent_dim * self.categorical_dim).to(current_device)
-        samples = self.decode(z)
+        samples = self.decode(z).squeeze()
         return samples
 
     def generate(self, x: Tensor, **kwargs) -> Tensor:
         """
-        Given an input image x, returns the reconstructed image
+        Given an input image x, returns the reconstructed image.
+        Returns only the first reconstructed sample
         :param x: (Tensor) [B x C x H x W]
         :return: (Tensor) [B x C x H x W]
         """
 
-        return self.forward(x)[0]
+        return self.forward(x)[0][:, 0, :]

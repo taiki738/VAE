@@ -1,28 +1,29 @@
 import torch
-from models import BaseVAE
+from vae_models import BaseVAE
 from torch import nn
+from torchvision.models import vgg19_bn
 from torch.nn import functional as F
 from .types_ import *
 
 
-class TwoStageVAE(BaseVAE):
+class DFCVAE(BaseVAE):
 
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
                  hidden_dims: List = None,
-                 hidden_dims2: List = None,
+                 alpha:float = 1,
+                 beta:float = 0.5,
                  **kwargs) -> None:
-        super(TwoStageVAE, self).__init__()
+        super(DFCVAE, self).__init__()
 
         self.latent_dim = latent_dim
+        self.alpha = alpha
+        self.beta = beta
 
         modules = []
         if hidden_dims is None:
             hidden_dims = [32, 64, 128, 256, 512]
-
-        if hidden_dims2 is None:
-            hidden_dims2 = [1024, 1024]
 
         # Build Encoder
         for h_dim in hidden_dims:
@@ -42,7 +43,9 @@ class TwoStageVAE(BaseVAE):
 
         # Build Decoder
         modules = []
+
         self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
+
         hidden_dims.reverse()
 
         for i in range(len(hidden_dims) - 1):
@@ -57,6 +60,9 @@ class TwoStageVAE(BaseVAE):
                     nn.BatchNorm2d(hidden_dims[i + 1]),
                     nn.LeakyReLU())
             )
+
+
+
         self.decoder = nn.Sequential(*modules)
 
         self.final_layer = nn.Sequential(
@@ -72,30 +78,14 @@ class TwoStageVAE(BaseVAE):
                                       kernel_size= 3, padding= 1),
                             nn.Tanh())
 
-        #---------------------- Second VAE ---------------------------#
-        encoder2 = []
-        in_channels = self.latent_dim
-        for h_dim in hidden_dims2:
-            encoder2.append(nn.Sequential(
-                                nn.Linear(in_channels, h_dim),
-                                nn.BatchNorm1d(h_dim),
-                                nn.LeakyReLU()))
-            in_channels = h_dim
-        self.encoder2 = nn.Sequential(*encoder2)
-        self.fc_mu2 = nn.Linear(hidden_dims2[-1], self.latent_dim)
-        self.fc_var2 = nn.Linear(hidden_dims2[-1], self.latent_dim)
+        self.feature_network = vgg19_bn(pretrained=True)
 
-        decoder2 = []
-        hidden_dims2.reverse()
+        # Freeze the pretrained feature network
+        for param in self.feature_network.parameters():
+            param.requires_grad = False
 
-        in_channels = self.latent_dim
-        for h_dim in hidden_dims2:
-            decoder2.append(nn.Sequential(
-                                nn.Linear(in_channels, h_dim),
-                                nn.BatchNorm1d(h_dim),
-                                nn.LeakyReLU()))
-            in_channels = h_dim
-        self.decoder2 = nn.Sequential(*decoder2)
+        self.feature_network.eval()
+
 
     def encode(self, input: Tensor) -> List[Tensor]:
         """
@@ -142,8 +132,33 @@ class TwoStageVAE(BaseVAE):
     def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
         mu, log_var = self.encode(input)
         z = self.reparameterize(mu, log_var)
+        recons = self.decode(z)
 
-        return  [self.decode(z), input, mu, log_var]
+        recons_features = self.extract_features(recons)
+        input_features = self.extract_features(input)
+
+        return  [recons, input, recons_features, input_features, mu, log_var]
+
+    def extract_features(self,
+                         input: Tensor,
+                         feature_layers: List = None) -> List[Tensor]:
+        """
+        Extracts the features from the pretrained model
+        at the layers indicated by feature_layers.
+        :param input: (Tensor) [B x C x H x W]
+        :param feature_layers: List of string of IDs
+        :return: List of the extracted features
+        """
+        if feature_layers is None:
+            feature_layers = ['14', '24', '34', '43']
+        features = []
+        result = input
+        for (key, module) in self.feature_network.features._modules.items():
+            result = module(result)
+            if(key in feature_layers):
+                features.append(result)
+
+        return features
 
     def loss_function(self,
                       *args,
@@ -157,16 +172,21 @@ class TwoStageVAE(BaseVAE):
         """
         recons = args[0]
         input = args[1]
-        mu = args[2]
-        log_var = args[3]
+        recons_features = args[2]
+        input_features = args[3]
+        mu = args[4]
+        log_var = args[5]
 
         kld_weight = kwargs['M_N'] # Account for the minibatch samples from the dataset
         recons_loss =F.mse_loss(recons, input)
 
+        feature_loss = 0.0
+        for (r, i) in zip(recons_features, input_features):
+            feature_loss += F.mse_loss(r, i)
 
         kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim = 1), dim = 0)
 
-        loss = recons_loss + kld_weight * kld_loss
+        loss = self.beta * (recons_loss + feature_loss) + self.alpha * kld_weight * kld_loss
         return {'loss': loss, 'Reconstruction_Loss':recons_loss, 'KLD':-kld_loss}
 
     def sample(self,

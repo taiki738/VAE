@@ -2,8 +2,8 @@ import os
 import math
 import torch
 from torch import optim
-from models import BaseVAE
-from models.types_ import *
+from vae_models import BaseVAE
+from vae_models.types_ import *
 from utils import data_loader
 import pytorch_lightning as pl
 from torchvision import transforms
@@ -20,11 +20,11 @@ class VAEXperiment(pl.LightningModule):
         super(VAEXperiment, self).__init__()
 
         self.model = vae_model
-        self.params = params
+        self.save_hyperparameters(params)
         self.curr_device = None
         self.hold_graph = False
         try:
-            self.hold_graph = self.params['retain_first_backpass']
+            self.hold_graph = self.hparams.retain_first_backpass
         except:
             pass
 
@@ -32,12 +32,13 @@ class VAEXperiment(pl.LightningModule):
         return self.model(input, **kwargs)
 
     def training_step(self, batch, batch_idx, optimizer_idx = 0):
-        real_img, labels = batch
+        real_img = batch['image']
+        labels = batch['class_label']
         self.curr_device = real_img.device
 
         results = self.forward(real_img, labels = labels)
         train_loss = self.model.loss_function(*results,
-                                              M_N = self.params['kld_weight'], #al_img.shape[0]/ self.num_train_imgs,
+                                              M_N = self.hparams.kld_weight, #al_img.shape[0]/ self.num_train_imgs,
                                               optimizer_idx=optimizer_idx,
                                               batch_idx = batch_idx,
                                               global_step = self.global_step)
@@ -47,7 +48,8 @@ class VAEXperiment(pl.LightningModule):
         return train_loss['loss']
 
     def validation_step(self, batch, batch_idx, optimizer_idx = 0):
-        real_img, labels = batch
+        real_img = batch['image']
+        labels = batch['class_label']
         self.curr_device = real_img.device
 
         results = self.forward(real_img, labels = labels)
@@ -65,7 +67,9 @@ class VAEXperiment(pl.LightningModule):
         
     def sample_images(self):
         # Get sample reconstruction image            
-        test_input, test_label = next(iter(self.trainer.datamodule.test_dataloader()))
+        test_batch = next(iter(self.trainer.datamodule.test_dataloader()))
+        test_input = test_batch['image']
+        test_label = test_batch['class_label']
         test_input = test_input.to(self.curr_device)
         test_label = test_label.to(self.curr_device)
 
@@ -97,29 +101,29 @@ class VAEXperiment(pl.LightningModule):
         scheds = []
 
         optimizer = optim.Adam(self.model.parameters(),
-                               lr=self.params['LR'],
-                               weight_decay=self.params['weight_decay'])
+                               lr=self.hparams.LR,
+                               weight_decay=self.hparams.weight_decay)
         optims.append(optimizer)
         # Check if more than 1 optimizer is required (Used for adversarial training)
         try:
-            if self.params['LR_2'] is not None:
-                optimizer2 = optim.Adam(getattr(self.model,self.params['submodel']).parameters(),
-                                        lr=self.params['LR_2'])
+            if self.hparams.LR_2 is not None:
+                optimizer2 = optim.Adam(getattr(self.model,self.hparams.submodel).parameters(),
+                                        lr=self.hparams.LR_2)
                 optims.append(optimizer2)
         except:
             pass
 
         try:
-            if self.params['scheduler_gamma'] is not None:
+            if self.hparams.scheduler_gamma is not None:
                 scheduler = optim.lr_scheduler.ExponentialLR(optims[0],
-                                                             gamma = self.params['scheduler_gamma'])
+                                                             gamma = self.hparams.scheduler_gamma)
                 scheds.append({'scheduler': scheduler, 'interval': 'epoch'})
 
                 # Check if another scheduler is required for the second optimizer
                 try:
-                    if self.params['scheduler_gamma_2'] is not None:
+                    if self.hparams.scheduler_gamma_2 is not None:
                         scheduler2 = optim.lr_scheduler.ExponentialLR(optims[1],
-                                                                      gamma = self.params['scheduler_gamma_2'])
+                                                                      gamma = self.hparams.scheduler_gamma_2)
                         scheds.append({'scheduler': scheduler2, 'interval': 'epoch'})
                 except:
                     pass

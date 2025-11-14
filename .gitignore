@@ -11,4 +11,4 @@ Run.ipynb
 .venv/
 Data/
 configs/tmp/tmp_vae.yaml
-results_sampling/
+results_sampling/*.egg-info/

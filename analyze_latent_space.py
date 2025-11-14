@@ -6,7 +6,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from torchvision.utils import save_image
 from sklearn.manifold import TSNE
-from models import *
+from vae_models import *
 from experiment import VAEXperiment
 from dataset import VAEDataset
 import pandas as pd
